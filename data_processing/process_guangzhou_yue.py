@@ -1,0 +1,61 @@
+"""
+Download AlienKevin/guangzhou-daily-use-speech from Hugging Face
+and convert it to JSONL format with WAV files saved locally.
+
+Output:
+  - WAV files: /home/jovyan/work/sylvia/asr-data/yue/wav/*.wav
+  - JSONL file: /home/jovyan/work/sylvia/myWhisperTrainer/data_processing/guangzhou_yue_all.jsonl
+"""
+
+import os
+import json
+import soundfile as sf
+from datasets import load_dataset
+
+# -- Paths --
+WAV_DIR = "/home/jovyan/work/sylvia/asr-data/yue/wav"
+JSONL_PATH = "/home/jovyan/work/sylvia/myWhisperTrainer/data_processing/guangzhou_yue_all.jsonl"
+
+os.makedirs(WAV_DIR, exist_ok=True)
+
+print("Loading dataset from Hugging Face (this may take a while for ~460MB)...")
+ds = load_dataset("AlienKevin/guangzhou-daily-use-speech", split="train")
+
+print(f"Dataset loaded: {len(ds)} samples")
+print(f"Features: {ds.features}")
+print(f"Saving WAV files to: {WAV_DIR}")
+print(f"Saving JSONL to: {JSONL_PATH}")
+
+count = 0
+with open(JSONL_PATH, "w", encoding="utf-8") as f_out:
+    for idx, sample in enumerate(ds):
+        # Build a filename like guangzhou_yue_00000.wav
+        wav_filename = f"guangzhou_yue_{idx:05d}.wav"
+        wav_path = os.path.join(WAV_DIR, wav_filename)
+
+        # Extract audio data
+        audio_data = sample["audio"]
+        audio_array = audio_data["array"]
+        sampling_rate = audio_data["sampling_rate"]
+
+        # Save as WAV
+        sf.write(wav_path, audio_array, sampling_rate)
+
+        # Get the text (sentence field)
+        text = sample["sentence"].strip()
+
+        # Build JSONL record matching librispeech format
+        record = {
+            "audio": wav_path,
+            "text": text,
+            "split": "train",
+        }
+        f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
+        count += 1
+
+        if (idx + 1) % 500 == 0:
+            print(f"  Processed {idx + 1}/{len(ds)} samples...")
+
+print(f"\nDone! Processed {count} samples total.")
+print(f"  WAV files: {WAV_DIR}/ ({count} files)")
+print(f"  JSONL file: {JSONL_PATH}")

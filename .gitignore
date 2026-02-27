@@ -1,0 +1,56 @@
+# ===================== Python =====================
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ===================== Model checkpoints =====================
+whisper-turbo-*/
+
+# ===================== Data & audio =====================
+data/
+data0/
+data1/
+audio_data/
+test_data/
+our_data/
+common_voice_*/
+data_taiwan_*/
+*.jsonl
+*.jsonl.bak
+
+# ===================== Logs =====================
+logs/
+*.log
+*.pid
+
+# ===================== Experiment artifacts =====================
+pure_whisper/*.jsonl
+pure_whisper/*.log
+pure_whisper/*.txt
+
+# ===================== Data processing artifacts =====================
+data_processing/*.jsonl
+data_processing/*.jsonl.bak
+data_processing/*.log
+
+# ===================== Benchmark results =====================
+benchmark/*.jsonl
+benchmark/*.log
+benchmark/results_*/
+
+# ===================== IDE & editor =====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ===================== Environment =====================
+.env
+.env.*
+*.pth
