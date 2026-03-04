@@ -63,10 +63,16 @@ def evaluate_cer(model, processor, dataloader, device, max_gen_len: int, cer_met
     return float(cer_metric.compute(predictions=preds, references=refs))
 
 
-def save_ckpt(model, processor, out_dir: str):
+def save_ckpt(model, processor, out_dir: str, custom_lang_info=None):
     os.makedirs(out_dir, exist_ok=True)
-    model.save_pretrained(out_dir)      # 仅 LoRA adapter（很小）
+    model.save_pretrained(out_dir)
     processor.save_pretrained(out_dir)
+    if custom_lang_info:
+        from custom_lang import save_custom_embeddings
+        save_custom_embeddings(
+            model, out_dir, custom_lang_info["orig_vocab_size"],
+            lang_token_ids=custom_lang_info.get("lang_token_ids"),
+        )
 
 
 def _sanitize_run_name(name: str) -> str:
@@ -182,7 +188,17 @@ def main():
     if model.generation_config.suppress_tokens:
         model.generation_config.suppress_tokens = []
 
-    # 2) LoRA - Apply FIRST before freezing
+    # 2a) Custom language tokens (must happen before PEFT wrapping)
+    custom_lang_info = None
+    custom_tokens = getattr(config, "ADD_CUSTOM_LANG_TOKENS", None)
+    if custom_tokens:
+        from custom_lang import add_language_tokens
+        init_map = getattr(config, "CUSTOM_LANG_TOKEN_INIT", {})
+        custom_lang_info = add_language_tokens(
+            model, processor, custom_tokens, init_map,
+        )
+
+    # 2b) LoRA - Apply FIRST before freezing
     target_modules = [s.strip() for s in config.TARGET_MODULES.split(",") if s.strip()]
     lora_cfg = LoraConfig(
         r=config.LORA_R,
@@ -205,7 +221,31 @@ def main():
     model.print_trainable_parameters()
     
     model.to(device)
-    
+
+    # 3b) Gradient hooks for custom-token embeddings
+    embed_hooks = []
+    if custom_lang_info:
+        from custom_lang import setup_embedding_grad_hooks
+        lang_token_ids = None
+        if getattr(config, "UNFREEZE_LANG_EMBEDDINGS", False):
+            gen_cfg = getattr(
+                model.get_base_model() if hasattr(model, "get_base_model") else model,
+                "generation_config", None,
+            )
+            if gen_cfg and hasattr(gen_cfg, "lang_to_id"):
+                lang_token_ids = set(gen_cfg.lang_to_id.values())
+                logger.info(
+                    "UNFREEZE_LANG_EMBEDDINGS=True: %d language token rows will be trainable",
+                    len(lang_token_ids),
+                )
+        embed_hooks = setup_embedding_grad_hooks(
+            model, custom_lang_info["orig_vocab_size"],
+            trainable_token_ids=lang_token_ids,
+        )
+        if lang_token_ids:
+            custom_lang_info["lang_token_ids"] = lang_token_ids
+        model.print_trainable_parameters()
+
     # 4) Enable gradient checkpointing AFTER applying PEFT and moving to device
     if config.USE_GRAD_CHECKPOINT:
         model.gradient_checkpointing_enable()
@@ -368,12 +408,12 @@ def main():
 
                     if best_cer is None or cer_val < best_cer:
                         best_cer = cer_val
-                        save_ckpt(model, processor, os.path.join(run_dir, "best"))
+                        save_ckpt(model, processor, os.path.join(run_dir, "best"), custom_lang_info)
                         logger.info("save best -> %s", os.path.join(run_dir, "best"))
 
                 if config.SAVE_STEPS > 0 and global_step % config.SAVE_STEPS == 0:
                     out = os.path.join(run_dir, f"step-{global_step}")
-                    save_ckpt(model, processor, out)
+                    save_ckpt(model, processor, out, custom_lang_info)
                     logger.info("save -> %s", out)
 
         # epoch end eval
@@ -382,7 +422,7 @@ def main():
         writer.add_scalar("eval/cer_epoch", cer_epoch, epoch)
 
     # final save
-    save_ckpt(model, processor, os.path.join(run_dir, "final"))
+    save_ckpt(model, processor, os.path.join(run_dir, "final"), custom_lang_info)
     logger.info("done saved -> %s", os.path.join(run_dir, "final"))
     writer.close()
 

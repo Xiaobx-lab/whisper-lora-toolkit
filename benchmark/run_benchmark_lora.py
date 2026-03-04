@@ -396,6 +396,15 @@ def main():
         torch_dtype=torch_dtype,
     )
 
+    custom_langs = None
+    if os.path.isfile(os.path.join(adapter_path, "custom_embeddings.pt")):
+        from custom_lang import load_custom_lang_for_inference
+        custom_langs = load_custom_lang_for_inference(
+            base_model, processor, adapter_path,
+        )
+        if custom_langs:
+            print(f"  Custom language tokens restored: {custom_langs}")
+
     print(f"  Loading LoRA adapter from {adapter_path} ...")
     model = PeftModelForWhisper.from_pretrained(base_model, adapter_path)
 
