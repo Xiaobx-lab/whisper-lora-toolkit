@@ -4,15 +4,15 @@
 
 # ===== 路径 =====
 MODEL_NAME = "/home/jovyan/work/sylvia/models--openai--whisper-large-v3-turbo/snapshots/41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
-TRAIN_JSONL = "/home/jovyan/work/sylvia/myWhisperTrainer/data_processing/mixed_train.jsonl"
+TRAIN_JSONL = "/home/jovyan/work/sylvia/myWhisperTrainer/data_processing/mixed_train_v2.jsonl"
 VALID_JSONL = "/home/jovyan/work/sylvia/myWhisperTrainer/our_data/valid.jsonl"
 OUTPUT_DIR = "whisper-turbo-multilingual-nan-token"
-RUN_NAME = "multilingual_nan_token"
+RUN_NAME = "multilingual_nan_token_v2"
 
 # ===== 训练超参 =====
 EPOCHS = 10
-TRAIN_BS = 8
-EVAL_BS = 8
+TRAIN_BS = 16
+EVAL_BS = 16
 GRAD_ACCUM = 1
 LR = 1e-4
 WARMUP_STEPS = 500

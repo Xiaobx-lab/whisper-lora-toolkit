@@ -77,6 +77,7 @@ class CollatorWhisper:
     default_language: str = "zh"
     default_task: str = "transcribe"
     language_mapping: Optional[Dict[str, str]] = None
+    strip_bos: bool = False
 
     def _resolve_language(self, lang: str) -> str:
         if self.language_mapping and lang in self.language_mapping:
@@ -100,7 +101,10 @@ class CollatorWhisper:
                     truncation=True,
                     max_length=self.max_label_len,
                 )
-                all_label_ids.append(token_result.input_ids)
+                ids = token_result.input_ids
+                if self.strip_bos and ids and ids[0] == self.processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>"):
+                    ids = ids[1:]
+                all_label_ids.append(ids)
 
             max_len = max(len(ids) for ids in all_label_ids)
             padded = torch.full(
@@ -121,9 +125,12 @@ class CollatorWhisper:
                 max_length=self.max_label_len,
                 return_tensors="pt"
             )
-            labels = label_features.input_ids.masked_fill(
-                label_features.attention_mask.ne(1), -100
-            )
+            input_ids = label_features.input_ids
+            attn_mask = label_features.attention_mask
+            if self.strip_bos:
+                input_ids = input_ids[:, 1:]
+                attn_mask = attn_mask[:, 1:]
+            labels = input_ids.masked_fill(attn_mask.ne(1), -100)
 
         return {
             "input_features": input_features,

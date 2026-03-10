@@ -271,6 +271,7 @@ def main():
     if config.FORCE_DECODER_PROMPT:
         collator = CollatorWhisper(
             processor=processor, max_label_len=config.MAX_LABEL_LEN,
+            strip_bos=True,
         )
     else:
         collator = CollatorWhisper(
@@ -279,6 +280,7 @@ def main():
             default_language=getattr(config, "DEFAULT_LANGUAGE", "zh"),
             default_task=force_task,
             language_mapping=lang_mapping,
+            strip_bos=True,
         )
         logger.info(
             "Multilingual mode: per_sample_language=True, "

@@ -38,7 +38,9 @@ import torch
 import torchaudio
 from tqdm import tqdm
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
-from peft import PeftConfig
+from peft import PeftConfig, LoraConfig
+from peft.utils.save_and_load import set_peft_model_state_dict
+from safetensors.torch import load_file as safe_load_file
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from whisper_peft import PeftModelForWhisper
@@ -130,23 +132,25 @@ def load_benchmark(path: str) -> list:
     return samples
 
 
-def detect_language(model, input_features, processor):
+def batch_detect_language(model, input_features, processor, num_sot=1):
     """
-    Detect language via a single decoder step on <|startoftranscript|>,
-    then softmax over language-only logits. Works with both vanilla and
-    PeftModel-wrapped Whisper. Returns (lang_code, probability).
+    Batch language detection.
+    num_sot=1 for strip_bos-trained models, num_sot=2 for legacy models.
+    Returns list of (lang_code, probability) tuples.
     """
     gen_cfg = model.generation_config
     lang_to_id = getattr(gen_cfg, "lang_to_id", None)
     if not lang_to_id:
-        return "unknown", 0.0
+        return [("unknown", 0.0)] * input_features.shape[0]
 
     id_to_lang = {v: k for k, v in lang_to_id.items()}
     device = input_features.device
+    bs = input_features.shape[0]
 
-    decoder_input_ids = torch.ones(
-        (1, 1), device=device, dtype=torch.long,
-    ) * gen_cfg.decoder_start_token_id
+    decoder_input_ids = torch.full(
+        (bs, num_sot), gen_cfg.decoder_start_token_id,
+        device=device, dtype=torch.long,
+    )
 
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
     encoder_outputs = base.get_encoder()(input_features[:, :, :3000])
@@ -156,17 +160,21 @@ def detect_language(model, input_features, processor):
         use_cache=False,
     ).logits[:, -1]
 
-    non_lang_mask = torch.ones_like(logits[0], dtype=torch.bool)
+    non_lang_mask = torch.ones(logits.shape[-1], dtype=torch.bool, device=device)
     non_lang_mask[list(lang_to_id.values())] = False
     logits[:, non_lang_mask] = -np.inf
 
     probs = torch.softmax(logits.float(), dim=-1)
-    best_id = probs[0].argmax().item()
-    best_tag = id_to_lang.get(best_id, "")
-    best_lang = best_tag.strip("<|>") or "unknown"
-    best_prob = round(probs[0, best_id].item(), 4)
+    best_ids = probs.argmax(dim=-1)
 
-    return best_lang, best_prob
+    results = []
+    for i in range(bs):
+        bid = best_ids[i].item()
+        tag = id_to_lang.get(bid, "")
+        lang = tag.strip("<|>") or "unknown"
+        prob = round(probs[i, bid].item(), 4)
+        results.append((lang, prob))
+    return results
 
 
 # --------------- Report ---------------
@@ -355,6 +363,15 @@ def parse_args():
         "--force_task", type=str, default="transcribe",
         help="Forced task (default: transcribe)",
     )
+    parser.add_argument(
+        "--num_sot", type=int, default=1, choices=[1, 2],
+        help="Number of SOT tokens for language detection. "
+             "1 = strip_bos-trained models (default), 2 = legacy models.",
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=16,
+        help="Batch size for language detection and generation (default: 16).",
+    )
     return parser.parse_args()
 
 
@@ -406,7 +423,15 @@ def main():
             print(f"  Custom language tokens restored: {custom_langs}")
 
     print(f"  Loading LoRA adapter from {adapter_path} ...")
-    model = PeftModelForWhisper.from_pretrained(base_model, adapter_path)
+    lora_cfg = LoraConfig.from_pretrained(adapter_path)
+    model = PeftModelForWhisper(base_model, lora_cfg)
+    adapter_file = os.path.join(adapter_path, "adapter_model.safetensors")
+    if os.path.isfile(adapter_file):
+        adapter_weights = safe_load_file(adapter_file)
+    else:
+        adapter_file = os.path.join(adapter_path, "adapter_model.bin")
+        adapter_weights = torch.load(adapter_file, map_location="cpu", weights_only=True)
+    set_peft_model_state_dict(model, adapter_weights)
 
     if args.force_language:
         forced_decoder_ids = processor.get_decoder_prompt_ids(
@@ -437,78 +462,125 @@ def main():
     samples = load_benchmark(args.benchmark_path)
     print(f"  Total samples: {len(samples)}")
 
-    # ---- Transcribe ----
-    print("[3/3] Running transcription ...")
-    results = []
-    results_path = os.path.join(output_dir, "transcription_results.jsonl")
+    # ---- Transcribe (batched) ----
+    batch_size = args.batch_size
+    print(
+        f"[3/3] Running transcription "
+        f"(batch_size={batch_size}, num_sot={args.num_sot}) ..."
+    )
 
-    with open(results_path, "w", encoding="utf-8") as f_out:
-        for idx, sample in enumerate(
-            tqdm(samples, desc="Transcribing", unit="sample")
+    # Phase 1: Load audio and extract features
+    features = []
+    load_errors = {}
+    for idx, sample in enumerate(
+        tqdm(samples, desc="Extracting features", unit="sample")
+    ):
+        try:
+            waveform = load_audio_16k_mono(sample["audio"])
+            feat = processor.feature_extractor(
+                waveform.numpy(), sampling_rate=16000, return_tensors="pt",
+            ).input_features[0]
+            features.append((idx, feat))
+        except Exception as e:
+            load_errors[idx] = str(e)
+
+    # Phase 2: Batch language detection
+    detected_langs = {}
+    if args.force_language:
+        for idx, _ in features:
+            detected_langs[idx] = args.force_language
+    else:
+        for b_start in tqdm(
+            range(0, len(features), batch_size),
+            desc="Detecting languages",
         ):
-            audio_path = sample["audio"]
-            reference = sample["text"]
-            language = sample.get("language", "unknown")
-            source = sample.get("source", "unknown")
+            batch = features[b_start : b_start + batch_size]
+            stacked = torch.stack([f for _, f in batch]).to(
+                device, dtype=torch_dtype,
+            )
+            with torch.no_grad():
+                det = batch_detect_language(
+                    model, stacked, processor, args.num_sot,
+                )
+            for (idx, _), (lang, _prob) in zip(batch, det):
+                detected_langs[idx] = lang
 
-            t0 = time.time()
-            status = "success"
-            error_msg = None
-            hypothesis = ""
-            detected_lang = args.force_language or "unknown"
+    # Phase 3: Group by detected language, batch generate
+    lang_groups = defaultdict(list)
+    for idx, feat in features:
+        lang_groups[detected_langs[idx]].append((idx, feat))
 
-            try:
-                waveform = load_audio_16k_mono(audio_path)
-                input_features = processor.feature_extractor(
-                    waveform.numpy(),
-                    sampling_rate=16000,
-                    return_tensors="pt",
-                ).input_features.to(device, dtype=torch_dtype)
-
+    hypotheses = {}
+    total_gen = sum(len(g) for g in lang_groups.values())
+    with tqdm(total=total_gen, desc="Generating", unit="sample") as pbar:
+        for lang, group in lang_groups.items():
+            for b_start in range(0, len(group), batch_size):
+                batch = group[b_start : b_start + batch_size]
+                indices = [b[0] for b in batch]
+                stacked = torch.stack([b[1] for b in batch]).to(
+                    device, dtype=torch_dtype,
+                )
                 with torch.no_grad():
-                    if not args.force_language:
-                        detected_lang, _ = detect_language(
-                            model, input_features, processor
-                        )
-
                     gen_ids = model.generate(
-                        input_features=input_features,
+                        input_features=stacked,
+                        language=lang if lang != "unknown" else None,
                         max_length=MAX_GEN_LEN,
                         num_beams=1,
                     )
+                decoded = processor.tokenizer.batch_decode(
+                    gen_ids, skip_special_tokens=True,
+                )
+                for i, hyp in zip(indices, decoded):
+                    hypotheses[i] = normalize_text(hyp)
+                pbar.update(len(batch))
 
-                hypothesis = processor.tokenizer.batch_decode(
-                    gen_ids, skip_special_tokens=True
-                )[0]
-                hypothesis = normalize_text(hypothesis)
-
-            except Exception as e:
-                status = "failed"
-                error_msg = str(e)
-
-            elapsed = time.time() - t0
-            cer_info = compute_cer(reference, hypothesis)
-
-            result = {
-                "index": idx + 1,
-                "audio": audio_path,
-                "reference": reference,
-                "hypothesis": hypothesis,
-                "language": language,
-                "source": source,
-                "detected_language": detected_lang,
-                "model": f"whisper-large-v3-turbo+lora",
-                "adapter": adapter_path,
-                "status": status,
-                "cer": round(cer_info["cer"], 6),
-                "edit_distance": cer_info["edit_distance"],
-                "ref_char_count": cer_info["ref_char_count"],
-                "elapsed_time": round(elapsed, 2),
-                "error": error_msg,
-            }
+    # Phase 4: Assemble results
+    results = []
+    results_path = os.path.join(output_dir, "transcription_results.jsonl")
+    with open(results_path, "w", encoding="utf-8") as f_out:
+        for idx, sample in enumerate(samples):
+            if idx in load_errors:
+                cer_info = compute_cer(sample.get("text", ""), "")
+                result = {
+                    "index": idx + 1,
+                    "audio": sample["audio"],
+                    "reference": sample.get("text", ""),
+                    "hypothesis": "",
+                    "language": sample.get("language", "unknown"),
+                    "source": sample.get("source", "unknown"),
+                    "detected_language": "unknown",
+                    "model": "whisper-large-v3-turbo+lora",
+                    "adapter": adapter_path,
+                    "status": "failed",
+                    "cer": round(cer_info["cer"], 6),
+                    "edit_distance": cer_info["edit_distance"],
+                    "ref_char_count": cer_info["ref_char_count"],
+                    "elapsed_time": 0.0,
+                    "error": load_errors[idx],
+                }
+            else:
+                hyp = hypotheses[idx]
+                reference = sample.get("text", "")
+                cer_info = compute_cer(reference, hyp)
+                result = {
+                    "index": idx + 1,
+                    "audio": sample["audio"],
+                    "reference": reference,
+                    "hypothesis": hyp,
+                    "language": sample.get("language", "unknown"),
+                    "source": sample.get("source", "unknown"),
+                    "detected_language": detected_langs.get(idx, "unknown"),
+                    "model": "whisper-large-v3-turbo+lora",
+                    "adapter": adapter_path,
+                    "status": "success",
+                    "cer": round(cer_info["cer"], 6),
+                    "edit_distance": cer_info["edit_distance"],
+                    "ref_char_count": cer_info["ref_char_count"],
+                    "elapsed_time": 0.0,
+                    "error": None,
+                }
             results.append(result)
             f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
-            f_out.flush()
 
     total_time = time.time() - timestamp_start
     print(f"\nTranscription complete in {total_time / 60:.1f} minutes")
