@@ -1,0 +1,32 @@
+# Whisper ASR Service Config (LoRA Fine-tuned)
+# Author: Sylvia
+# Date: 2026-03-11
+
+# Model config
+model:
+  base_model_id: "/home/jovyan/work/sylvia/models--openai--whisper-large-v3-turbo/snapshots/41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
+  adapter_path: "/home/jovyan/work/sylvia/myWhisperTrainer/whisper-turbo-multilingual-nan-token/multilingual_nan_token_v2_20260310_063505/best"
+  local_files_only: true
+  target_sample_rate: 16000
+  language: null      # e.g. "zh", "en"; null = auto-detect
+  task: "transcribe"  # transcribe or translate
+
+# Ray Serve deployment
+deployment:
+  num_replicas: 1
+  gpu_per_replica: null  # null = auto: 1.0 / num_replicas
+  max_ongoing_requests: 100
+
+# Server
+server:
+  port: 8009
+
+# Batch
+batch:
+  max_batch_size: 8
+  batch_wait_timeout_s: 0.01
+
+# Generation
+generation:
+  max_new_tokens: 440
+  num_beams: 1

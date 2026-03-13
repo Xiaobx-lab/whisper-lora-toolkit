@@ -369,7 +369,7 @@ def parse_args():
              "1 = strip_bos-trained models (default), 2 = legacy models.",
     )
     parser.add_argument(
-        "--batch_size", type=int, default=16,
+        "--batch_size", type=int, default=8,
         help="Batch size for language detection and generation (default: 16).",
     )
     return parser.parse_args()
