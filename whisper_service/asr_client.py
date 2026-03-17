@@ -119,16 +119,23 @@ def main():
         return
 
     print(f"Transcribing: {args.audio_file}")
+
     t0 = time.time()
-    result = transcribe_file(args.audio_file, sample_rate=args.sample_rate, url=args.url)
-    elapsed = time.time() - t0
+    audio_b64 = read_audio_and_encode_base64(args.audio_file, target_sample_rate=args.sample_rate)
+    t_encode = time.time() - t0
+
+    t1 = time.time()
+    result = transcribe(audio_b64, sample_rate=args.sample_rate, url=args.url)
+    t_infer = time.time() - t1
 
     if "error" in result:
         print(f"Error: {result['error']}")
     else:
         print(f"Language: {result['language']}")
         print(f"Text:     {result['text']}")
-        print(f"Time:     {elapsed:.3f}s")
+        print(f"Encode:   {t_encode:.3f}s")
+        print(f"Infer:    {t_infer:.3f}s")
+        print(f"Total:    {t_encode + t_infer:.3f}s")
 
 
 if __name__ == "__main__":
