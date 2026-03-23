@@ -2,6 +2,35 @@
 
 Ray Serve + FastAPI service for the LoRA fine-tuned Whisper-large-v3-turbo model with true batch inference and encoder caching optimization.
 
+## Architecture
+
+```
+Client (HTTP)
+    |
+    v
+Ray Serve Proxy (:8009)
+    |
+    v
+@serve.batch (groups N concurrent requests)
+    |
+    v
+WhisperLoRAASR._batched_infer()
+    |
+    +-- Encoder (runs ONCE per batch, output cached)
+    |
+    +-- Language Detection (reuses encoder output, no redundant encoder pass)
+    |
+    +-- Decoder / model.generate() (reuses encoder output, true batch decoding)
+    |
+    v
+JSON response per request
+```
+
+Key optimizations vs the reference project (whipserZoo):
+- **Encoder caching**: encoder runs once per batch; the output is reused for both language detection and decoding. The reference project runs the encoder twice (once for language detection, once for transcription).
+- **True batch inference**: concurrent requests are grouped by `@serve.batch` into a single `model.generate()` call.
+- **LoRA adapter support**: loads fine-tuned adapters via PEFT with custom language token support (e.g. `<|nan|>` for Minnan).
+
 ## Quick Start
 
 ```bash
@@ -46,6 +75,9 @@ Main ASR endpoint. Accepts PCM16 base64-encoded audio.
 }
 ```
 
+- `audio_data` (required): mono PCM16 audio, base64-encoded.
+- `sample_rate` (optional, default 16000): sample rate of the input audio. If not 16000, the server will **auto-resample** to 16kHz via torchaudio. Supported rates: 8000, 22050, 44100, 48000, etc.
+
 **Response:**
 ```json
 {
@@ -61,6 +93,8 @@ Main ASR endpoint. Accepts PCM16 base64-encoded audio.
 }
 ```
 
+Possible error values: `audio_data_missing`, `decode_or_resample_error`, `service_not_ready`, `invalid_request`.
+
 ### `POST /infer`
 
 Legacy endpoint (compatible with whipserZoo).
@@ -72,6 +106,8 @@ Legacy endpoint (compatible with whipserZoo).
   "audio": "<PCM16 base64 string>"
 }
 ```
+
+Response format is the same as `/asr`. Sample rate is fixed at 16000.
 
 ## Client Usage
 
@@ -88,25 +124,6 @@ python whisper_service/asr_client.py audio.mp3 --url http://127.0.0.1:8009
 python whisper_service/test_client.py audio.wav --n 20
 ```
 
-### Python library
-
-```python
-from whisper_service.asr_client import transcribe_file, transcribe, health_check
-
-# Check service
-assert health_check("http://127.0.0.1:8009")
-
-# Transcribe a file (wav/mp3/flac/ogg/m4a/...)
-result = transcribe_file("audio.wav")
-print(result["text"])      # "transcribed text"
-print(result["language"])  # "zh"
-
-# Or encode audio yourself and call transcribe()
-import base64
-with open("audio_pcm16.raw", "rb") as f:
-    b64 = base64.b64encode(f.read()).decode()
-result = transcribe(b64, sample_rate=16000)
-```
 
 ### curl
 
@@ -127,26 +144,51 @@ Edit `whisper_service/config/whisper_config.yaml`:
 ```yaml
 model:
   base_model_id: "/path/to/whisper-large-v3-turbo"
-  adapter_path: "/path/to/lora/adapter/best"   # null = vanilla Whisper
+  adapter_path: "/path/to/lora/adapter/best"   # null = vanilla Whisper (no adapter)
+  local_files_only: true
   language: null                                 # null = auto-detect, or "zh"/"en"/...
   task: "transcribe"                             # "transcribe" or "translate"
 
 deployment:
   num_replicas: 1           # Number of Ray Serve replicas
   gpu_per_replica: null     # null = auto (1.0 / num_replicas)
+  max_ongoing_requests: 100
 
 batch:
   max_batch_size: 8         # Max requests per batch
-  batch_wait_timeout_s: 0.01
+  batch_wait_timeout_s: 0.01  # Max wait to form a batch (seconds)
 
 generation:
-  max_new_tokens: 440       # Max output tokens
+  max_new_tokens: 440       # Max output tokens (leave room for decoder prefix)
   num_beams: 1              # 1 = greedy decoding
+
+server:
+  port: 8009
 ```
 
-## Resource Usage
+## Performance
 
-Measured on NVIDIA H200 with `whisper-large-v3-turbo` + LoRA adapter (bfloat16):
+Measured on NVIDIA H200, `whisper-large-v3-turbo` + LoRA adapter, bfloat16.
+
+### Latency (single request, GPU exclusive)
+
+| Stage | Time |
+|-------|------|
+| Encoder forward | ~50ms |
+| Language detection | ~10ms |
+| Decoder generate (avg) | ~200ms |
+| **Total inference** | **~260ms** |
+| + HTTP overhead | ~310ms |
+
+### Throughput (batch inference)
+
+| Mode | Per request | Throughput |
+|------|------------|------------|
+| Sequential (no batching) | ~310ms | ~3 req/s |
+| 8 concurrent (batch=8) | ~145ms | ~7 req/s |
+| 10 concurrent (batch=10) | ~70ms | ~14 req/s |
+
+### Resource Usage
 
 | Component | Memory |
 |-----------|--------|
@@ -164,7 +206,7 @@ whisper_service/
 │   ├── __init__.py
 │   └── config_loader.py         # YAML config loader
 ├── whisper_lora_server.py       # Ray Serve + FastAPI server
-├── asr_client.py                # Client library & CLI example
+├── asr_client.py                # Client library & CLI tool
 ├── test_client.py               # Concurrent stress test
 ├── test_batch_standalone.py     # Standalone batch inference test (no Ray)
 ├── deploy.sh                    # Service management (start/stop/restart/status)
