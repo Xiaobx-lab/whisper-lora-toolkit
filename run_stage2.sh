@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# DEPRECATED EXPERIMENT: retained for reference only.
+# Use run_nohup.sh with the single-stage training config instead.
 # Usage:
 # ./run_stage2.sh start configs/config_stage2_nan_token.py
 # ./run_stage2.sh stop <pid_or_pid_file>

@@ -1,6 +1,6 @@
 # myWhisperTrainer
 
-基于 Hugging Face Transformers 与 PEFT 的 Whisper LoRA 训练、评测和推理工具集。项目主要面向中文、粤语、闽南语及多语种语音识别，支持自定义语言 token、两阶段训练、CER 评测，以及基于 Ray Serve 的批量推理服务。
+基于 Hugging Face Transformers 与 PEFT 的 Whisper LoRA 训练、评测和推理工具集。项目主要面向中文、粤语、闽南语及多语种语音识别，支持自定义语言 token、单阶段联合训练、CER 评测，以及基于 Ray Serve 的批量推理服务。
 
 ## 功能概览
 
@@ -8,7 +8,8 @@
 - 支持冻结或解冻 Whisper encoder
 - 支持按样本指定语言的多语种训练
 - 支持新增自定义语言 token，例如闽南语 `<|nan|>`
-- 支持只校准语言 token embedding 的第二阶段训练
+- 支持在 LoRA 训练中同步更新自定义及已有语言 token embedding
+- 移除训练标签中重复的 SOT token，使训练与语言检测行为保持一致
 - 自动记录训练日志、TensorBoard 指标、配置快照和最佳 checkpoint
 - 提供 CER、多语种语言检测和模型对比评测工具
 - 提供 Ray Serve + FastAPI 批量推理服务
@@ -17,8 +18,8 @@
 
 ```text
 myWhisperTrainer/
-├── train.py                  # 第一阶段 LoRA 训练入口
-├── train_stage2.py           # 第二阶段语言 token embedding 校准
+├── train.py                  # 当前推荐的 LoRA 主训练入口
+├── train_stage2.py           # 已废弃的两阶段实验代码（仅保留备查）
 ├── asrDataLoader.py          # JSONL 数据集与 Whisper collator
 ├── custom_lang.py            # 自定义语言 token 与 embedding 处理
 ├── whisper_peft.py           # Whisper 的 PEFT/LoRA 适配
@@ -27,8 +28,8 @@ myWhisperTrainer/
 ├── data_processing/          # 数据下载、转换、混合和校验脚本
 ├── scripts/                  # 数据统计及模型对比工具
 ├── whisper_service/          # Ray Serve 推理服务与客户端
-├── run_nohup.sh              # 后台运行第一阶段训练
-└── run_stage2.sh             # 后台运行第二阶段训练
+├── run_nohup.sh              # 后台运行主训练任务
+└── run_stage2.sh             # 已废弃实验的后台启动脚本
 ```
 
 模型权重、训练语料、日志、checkpoint 和评测输出默认不会提交到 Git。使用前需自行准备对应资源。
@@ -110,7 +111,7 @@ RUN_NAME = "my_run"
 - `FORCE_DECODER_PROMPT`：是否强制指定语言和任务
 - `ADD_CUSTOM_LANG_TOKENS`：需要新增的语言 token
 
-## 第一阶段：LoRA 训练
+## 训练（当前推荐流程）
 
 前台运行：
 
@@ -153,17 +154,22 @@ CUSTOM_LANG_TOKEN_INIT = {"nan": ["zh", "yue"]}
 UNFREEZE_LANG_EMBEDDINGS = True
 ```
 
-可参考 [`configs/config_multilingual_nan_token.py`](configs/config_multilingual_nan_token.py)。
+当前采用单阶段联合训练：`train.py` 在训练 LoRA 的同时更新新增 token，并在 `UNFREEZE_LANG_EMBEDDINGS=True` 时允许已有语言 token 的 embedding 一起学习。训练标签会移除开头重复的 SOT token，使训练过程与 `generate()` 的语言检测位置保持一致。
 
-## 第二阶段：语言 embedding 校准
+可参考 [`configs/config_multilingual_nan_token.py`](configs/config_multilingual_nan_token.py)，并直接使用 `train.py` 启动。
 
-第二阶段会加载第一阶段生成的 LoRA adapter，冻结 encoder、decoder 和 LoRA 权重，只训练语言 token 的 embedding。它适用于修正多语种数据不均衡导致的语言检测偏差。
+## 已废弃的两阶段实验
 
-先编辑 `configs/config_stage2_nan_token.py`，确认第一阶段 adapter、数据集及输出路径，然后运行：
+仓库仍保留一套曾经试验过的第二阶段语言 embedding 校准方案。它会加载第一阶段 adapter，冻结其他权重，再单独训练语言 token embedding。该方案后来被放弃，不属于当前推荐训练流程。
 
-```bash
-python train_stage2.py --config configs/config_stage2_nan_token.py
-```
+以下文件仅用于保留实验记录和复盘，不建议用于新的训练任务：
+
+- `train_stage2.py`
+- `configs/config_stage2_nan_token.py`
+- `run_stage2.sh`
+- `data_processing/make_stage2_data.py`
+
+新的训练任务应使用 `train.py`，并通过 `UNFREEZE_LANG_EMBEDDINGS` 控制语言 token embedding 是否参与同一阶段的训练。
 
 ## 模型评测
 
@@ -215,15 +221,14 @@ bash whisper_service/deploy.sh stop
 
 ## 后台训练脚本
 
-`run_nohup.sh` 和 `run_stage2.sh` 中包含原实验环境的绝对路径。使用前需修改 `BASE_DIR` 和 Conda 初始化路径。
+`run_nohup.sh` 中包含原实验环境的绝对路径。使用前需修改 `BASE_DIR` 和 Conda 初始化路径。
 
 ```bash
 ./run_nohup.sh start configs/config_local.py
 ./run_nohup.sh status
-
-./run_stage2.sh start configs/config_stage2_nan_token.py
-./run_stage2.sh status
 ```
+
+`run_stage2.sh` 属于已废弃的两阶段实验，不应作为常规训练入口。
 
 ## 注意事项
 

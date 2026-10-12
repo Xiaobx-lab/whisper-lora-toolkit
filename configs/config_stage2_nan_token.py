@@ -1,4 +1,6 @@
 # config_stage2_nan_token.py
+# DEPRECATED EXPERIMENT: retained for reference only.
+# Use train.py with configs/config_multilingual_nan_token.py instead.
 # Stage 2: Language token embedding calibration on balanced data.
 # Loads the stage-1 LoRA adapter, freezes everything, and only trains
 # the ~100 language-token embedding rows to fix language detection bias.

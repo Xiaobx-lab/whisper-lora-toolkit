@@ -1,6 +1,7 @@
 # config_multilingual_nan_token.py
 # 实验：为闽南话新增独立语言标签 <|nan|>，而非映射到 zh
-# 新 token 的 embedding 用 zh + yue 的均值初始化，训练时仅更新新 token 的 embedding
+# 新 token 的 embedding 用 zh + yue 的均值初始化；训练时同时更新
+# 新 token 与已有语言 token 的 embedding（见 UNFREEZE_LANG_EMBEDDINGS）
 
 # ===== 路径 =====
 MODEL_NAME = "/home/jovyan/work/sylvia/models--openai--whisper-large-v3-turbo/snapshots/41f01f3fe87f28c78e2fbf8b568835947dd65ed9"

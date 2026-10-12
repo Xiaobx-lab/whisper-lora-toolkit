@@ -1,5 +1,8 @@
 # train_stage2.py
 """
+DEPRECATED EXPERIMENT: this two-stage approach was abandoned.
+Use train.py with UNFREEZE_LANG_EMBEDDINGS instead.
+
 Stage 2: Language token embedding calibration.
 
 Loads a trained stage-1 LoRA adapter (with custom language tokens),

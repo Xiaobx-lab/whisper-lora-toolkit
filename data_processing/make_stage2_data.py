@@ -1,4 +1,7 @@
 """
+DEPRECATED EXPERIMENT: retained for reference only.
+The current training flow does not require a separate stage-2 dataset.
+
 Build a balanced stage-2 training set for language-token calibration.
 
 Sources
