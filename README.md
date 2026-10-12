@@ -1,4 +1,4 @@
-# myWhisperTrainer
+# Whisper LoRA Toolkit
 
 基于 Hugging Face Transformers 与 PEFT 的 Whisper LoRA 训练、评测和推理工具集。项目主要面向中文、粤语、闽南语及多语种语音识别，支持自定义语言 token、单阶段联合训练、CER 评测，以及基于 Ray Serve 的批量推理服务。
 
@@ -17,7 +17,7 @@
 ## 项目结构
 
 ```text
-myWhisperTrainer/
+whisper-lora-toolkit/
 ├── train.py                  # 当前推荐的 LoRA 主训练入口
 ├── asrDataLoader.py          # JSONL 数据集与 Whisper collator
 ├── custom_lang.py            # 自定义语言 token 与 embedding 处理
