@@ -19,7 +19,6 @@
 ```text
 myWhisperTrainer/
 ├── train.py                  # 当前推荐的 LoRA 主训练入口
-├── train_stage2.py           # 已废弃的两阶段实验代码（仅保留备查）
 ├── asrDataLoader.py          # JSONL 数据集与 Whisper collator
 ├── custom_lang.py            # 自定义语言 token 与 embedding 处理
 ├── whisper_peft.py           # Whisper 的 PEFT/LoRA 适配
@@ -28,8 +27,7 @@ myWhisperTrainer/
 ├── data_processing/          # 数据下载、转换、混合和校验脚本
 ├── scripts/                  # 数据统计及模型对比工具
 ├── whisper_service/          # Ray Serve 推理服务与客户端
-├── run_nohup.sh              # 后台运行主训练任务
-└── run_stage2.sh             # 已废弃实验的后台启动脚本
+└── run_nohup.sh              # 后台运行主训练任务
 ```
 
 模型权重、训练语料、日志、checkpoint 和评测输出默认不会提交到 Git。使用前需自行准备对应资源。
@@ -158,19 +156,6 @@ UNFREEZE_LANG_EMBEDDINGS = True
 
 可参考 [`configs/config_multilingual_nan_token.py`](configs/config_multilingual_nan_token.py)，并直接使用 `train.py` 启动。
 
-## 已废弃的两阶段实验
-
-仓库仍保留一套曾经试验过的第二阶段语言 embedding 校准方案。它会加载第一阶段 adapter，冻结其他权重，再单独训练语言 token embedding。该方案后来被放弃，不属于当前推荐训练流程。
-
-以下文件仅用于保留实验记录和复盘，不建议用于新的训练任务：
-
-- `train_stage2.py`
-- `configs/config_stage2_nan_token.py`
-- `run_stage2.sh`
-- `data_processing/make_stage2_data.py`
-
-新的训练任务应使用 `train.py`，并通过 `UNFREEZE_LANG_EMBEDDINGS` 控制语言 token embedding 是否参与同一阶段的训练。
-
 ## 模型评测
 
 使用 LoRA adapter 运行多语种 benchmark：
@@ -227,8 +212,6 @@ bash whisper_service/deploy.sh stop
 ./run_nohup.sh start configs/config_local.py
 ./run_nohup.sh status
 ```
-
-`run_stage2.sh` 属于已废弃的两阶段实验，不应作为常规训练入口。
 
 ## 注意事项
 
